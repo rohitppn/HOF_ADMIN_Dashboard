@@ -15,17 +15,42 @@ const TABS = {
 
 let doc = null;
 
+function normalizePrivateKey(raw) {
+  if (!raw) return null;
+  let k = raw.trim();
+  // Strip surrounding double quotes if pasted along with them.
+  if ((k.startsWith('"') && k.endsWith('"')) || (k.startsWith("'") && k.endsWith("'"))) {
+    k = k.slice(1, -1);
+  }
+  // Convert literal \n into real newlines (idempotent — no-op if already real).
+  if (k.includes('\\n')) k = k.replace(/\\n/g, '\n');
+  return k;
+}
+
 export async function initSheets() {
   const id = process.env.GOOGLE_SHEET_ID;
   const email = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
-  const key = process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, '\n');
+  const key = normalizePrivateKey(process.env.GOOGLE_PRIVATE_KEY);
   if (!id || !email || !key) {
     console.warn('[sheets] missing env — sheet sync disabled');
     return null;
   }
+  // Quick PEM sanity check so we fail with a clear message instead of the cryptic OSSL one.
+  if (!key.startsWith('-----BEGIN PRIVATE KEY-----') || !key.trim().endsWith('-----END PRIVATE KEY-----')) {
+    console.error('[sheets] GOOGLE_PRIVATE_KEY does not look like a PEM. First 40 chars:', JSON.stringify(key.slice(0, 40)));
+    console.error('[sheets] Disabling sheets sync. Fix the env var and redeploy.');
+    return null;
+  }
   const jwt = new JWT({ email, key, scopes: SCOPES });
   doc = new GoogleSpreadsheet(id, jwt);
-  await doc.loadInfo();
+  try {
+    await doc.loadInfo();
+  } catch (e) {
+    console.error('[sheets] auth failed:', e.message);
+    console.error('[sheets] Disabling sheets sync. Check GOOGLE_PRIVATE_KEY and that the sheet is shared with', email);
+    doc = null;
+    return null;
+  }
 
   for (const [title, headers] of Object.entries(TABS)) {
     let sheet = doc.sheetsByTitle[title];
