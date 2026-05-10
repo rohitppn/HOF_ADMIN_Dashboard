@@ -1,4 +1,6 @@
 import 'dotenv/config';
+import fs from 'node:fs';
+import path from 'node:path';
 import express from 'express';
 import QRCode from 'qrcode';
 import { startBot, getSock, getLatestQr, getConnectionStatus } from './bot.js';
@@ -62,6 +64,7 @@ app.get('/', (req, res) => {
 <a href="/health" target="_blank">Health</a>
 <a href="/admin/groups?secret=${process.env.ADMIN_SECRET || ''}" target="_blank">List groups (after bot connects)</a>
 <a href="/admin/ranking?secret=${process.env.ADMIN_SECRET || ''}" target="_blank">Today's ranking</a>
+<a href="/admin/relogin?secret=${process.env.ADMIN_SECRET || ''}" target="_blank">Reset session (wipe auth + new QR)</a>
 </body></html>`);
 });
 
@@ -76,6 +79,26 @@ app.get('/admin/groups', async (req, res) => {
   const groups = await sock.groupFetchAllParticipating();
   const list = Object.values(groups).map((g) => ({ jid: g.id, name: g.subject }));
   res.json(list);
+});
+
+// Wipe the WhatsApp auth folder and restart the process. Railway restart policy
+// brings the container back up immediately, after which /qr shows a fresh code.
+app.get('/admin/relogin', (req, res) => {
+  if (process.env.ADMIN_SECRET && req.query.secret !== process.env.ADMIN_SECRET) {
+    return res.status(403).json({ error: 'forbidden' });
+  }
+  const authDir = path.resolve('auth');
+  try {
+    if (fs.existsSync(authDir)) {
+      for (const f of fs.readdirSync(authDir)) {
+        fs.rmSync(path.join(authDir, f), { recursive: true, force: true });
+      }
+    }
+    res.json({ ok: true, message: 'auth cleared, restarting — open /qr in ~5s' });
+    setTimeout(() => process.exit(0), 500);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.get('/admin/ranking', (req, res) => {
