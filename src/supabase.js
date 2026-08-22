@@ -8,10 +8,24 @@ const url = process.env.SUPABASE_URL;
 const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 if (!url || !key) {
-  console.warn('[supabase] SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY missing — writes will fail');
+  const missing = [!url && 'SUPABASE_URL', !key && 'SUPABASE_SERVICE_ROLE_KEY'].filter(Boolean).join(' and ');
+  console.error('');
+  console.error('╔══════════════════════════════════════════════════════════════════╗');
+  console.error('║  FATAL: missing required env vars — bot cannot start             ║');
+  console.error('╠══════════════════════════════════════════════════════════════════╣');
+  console.error(`║  Missing: ${missing.padEnd(56)}║`);
+  console.error('║                                                                  ║');
+  console.error('║  Fix — Railway: Project → Variables tab → add:                   ║');
+  console.error('║    SUPABASE_URL=https://<project>.supabase.co                    ║');
+  console.error('║    SUPABASE_SERVICE_ROLE_KEY=<from Supabase Settings → API>      ║');
+  console.error('║                                                                  ║');
+  console.error('║  Fix — local: paste same values into .env, then restart.         ║');
+  console.error('╚══════════════════════════════════════════════════════════════════╝');
+  console.error('');
+  process.exit(1);
 }
 
-export const supabase = createClient(url || '', key || '', {
+export const supabase = createClient(url, key, {
   auth: { persistSession: false, autoRefreshToken: false },
 });
 
