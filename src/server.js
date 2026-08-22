@@ -10,6 +10,7 @@ import { dailyRanking } from './calc.js';
 import { todayDate } from './util.js';
 import { dashboardApi } from './dashboard-api.js';
 import { loadStores } from './config.js';
+import { ensureAdmin } from './auth.js';
 
 const app = express();
 app.use(express.json());
@@ -135,6 +136,10 @@ const PORT = process.env.PORT || 3001;
   // Everything downstream (bot routing, scheduler, dashboard) reads from this cache.
   try { await loadStores(); }
   catch (e) { console.error('[boot] failed to load stores:', e.message); }
+
+  // Bootstrap the first dashboard admin from ADMIN_EMAIL/ADMIN_PASSWORD (once).
+  try { await ensureAdmin(); }
+  catch (e) { console.error('[boot] ensureAdmin failed:', e.message); }
 
   await initSheets();
   await startBot();

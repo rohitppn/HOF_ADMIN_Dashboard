@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { api, getSecret } from '../api.js';
+import { api, getToken, API_BASE } from '../api.js';
 
 // Polls /whatsapp every 3s so the QR appears the moment the bot emits one,
 // and the connected view updates as soon as the link is established.
@@ -31,8 +31,12 @@ export default function WhatsAppView() {
     if (!confirm('Wipe WhatsApp session and force a new QR? The bot will restart.')) return;
     setResetting(true);
     try {
-      const base = (import.meta.env?.VITE_API_BASE || '').replace(/\/$/, '');
-      await fetch(`${base}/admin/relogin?secret=${encodeURIComponent(getSecret())}`);
+      // /admin/relogin still uses the ADMIN_SECRET query param (backend has
+      // no bearer-token acceptance on the /admin/* routes). This works as long
+      // as ADMIN_SECRET matches on client and server.
+      const secret = prompt('Enter ADMIN_SECRET to confirm session reset (matches Railway env var):');
+      if (!secret) return;
+      await fetch(`${API_BASE}/admin/relogin?secret=${encodeURIComponent(secret)}`);
       // The server exits and restarts — poll will resume once it's up.
     } catch (e) { alert('Reset failed: ' + e.message); }
     finally { setResetting(false); }

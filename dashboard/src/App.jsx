@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { api, getSecret } from './api.js';
+import { api, getToken, clearToken } from './api.js';
 import Login from './Login.jsx';
 import Filters from './components/Filters.jsx';
 import Overview from './views/Overview.jsx';
@@ -28,22 +28,24 @@ const TABS = [
 ];
 
 export default function App() {
-  const [authed, setAuthed] = useState(!!getSecret());
+  const [authed, setAuthed] = useState(!!getToken());
+  const [userEmail, setUserEmail] = useState('');
   const [tab, setTab] = useState('overview');
   const [range, setRange] = useState(() => ({ ...preset('today'), preset: 'today' }));
   const [storeKey, setStoreKey] = useState(null);
   const [stores, setStores] = useState([]);
   const [status, setStatus] = useState(null);
 
-  // Validate secret + load store list on mount.
+  // Validate token + load store list on mount.
   useEffect(() => {
     if (!authed) return;
     let dead = false;
     (async () => {
       try {
-        await api.health();
+        const me = await api.me();
         const s = await api.stores();
         if (dead) return;
+        setUserEmail(me?.email || '');
         setStores(s.stores);
         setStatus({ ok: true });
       } catch (e) {
@@ -52,6 +54,11 @@ export default function App() {
     })();
     return () => { dead = true; };
   }, [authed]);
+
+  function logout() {
+    clearToken();
+    setAuthed(false);
+  }
 
   const current = useMemo(() => TABS.find((t) => t.id === tab), [tab]);
 
@@ -73,8 +80,19 @@ export default function App() {
           </button>
         ))}
         <div className="spacer" />
-        <div className="foot">
-          {status?.ok ? `Connected · ${stores.length} stores` : status?.error || 'Loading…'}
+        <div className="foot" style={{ borderTop: '1px solid var(--border)', paddingTop: 12 }}>
+          {userEmail && (
+            <div style={{ marginBottom: 8, color: 'var(--text-2)', fontSize: 12, wordBreak: 'break-all' }}>
+              {userEmail}
+            </div>
+          )}
+          <button
+            onClick={logout}
+            style={{ color: 'var(--text-3)', fontSize: 12, padding: 0, textAlign: 'left' }}
+          >Sign out</button>
+          <div style={{ marginTop: 8, color: 'var(--text-3)', fontSize: 11 }}>
+            {status?.ok ? `${stores.length} stores connected` : status?.error || 'Loading…'}
+          </div>
         </div>
       </aside>
       <main className="main">

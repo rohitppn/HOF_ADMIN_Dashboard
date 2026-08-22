@@ -12,6 +12,7 @@ import {
 import { dailyRanking, consistencyScore, missingReports } from './calc.js';
 import { todayDate, nowIso } from './util.js';
 import { getSock, getLatestQr, getConnectionStatus } from './bot.js';
+import { findUser, verifyPassword, signToken, verifyToken, updateLastLogin } from './auth.js';
 
 export const dashboardApi = express.Router();
 dashboardApi.use(express.json());
@@ -29,20 +30,41 @@ dashboardApi.use((req, res, next) => {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Vary', 'Origin');
     res.setHeader('Access-Control-Allow-Methods', 'GET,POST,DELETE,OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'content-type, x-admin-secret');
+    res.setHeader('Access-Control-Allow-Headers', 'content-type, authorization, x-admin-secret');
     res.setHeader('Access-Control-Max-Age', '86400');
   }
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   next();
 });
 
-dashboardApi.use((req, res, next) => {
-  const expected = process.env.ADMIN_SECRET;
-  if (!expected) return res.status(503).json({ error: 'ADMIN_SECRET not set on server' });
-  const supplied = req.get('x-admin-secret') || req.query.secret;
-  if (supplied !== expected) return res.status(401).json({ error: 'unauthorized' });
-  next();
+// Login is public — everything else needs a Bearer token (or the legacy
+// x-admin-secret header for backwards-compat with scripts / /admin/* URLs).
+dashboardApi.post('/login', async (req, res) => {
+  const email = String(req.body?.email || '').toLowerCase().trim();
+  const password = String(req.body?.password || '');
+  if (!email || !password) return res.status(400).json({ error: 'email and password required' });
+  const user = await findUser(email);
+  if (!user || !verifyPassword(password, user.password_hash, user.salt)) {
+    return res.status(401).json({ error: 'invalid email or password' });
+  }
+  const token = signToken({ email: user.email });
+  updateLastLogin(user.email).catch(() => {});
+  res.json({ token, email: user.email });
 });
+
+dashboardApi.use((req, res, next) => {
+  const bearer = (req.get('authorization') || '').replace(/^Bearer\s+/i, '').trim();
+  if (bearer) {
+    const payload = verifyToken(bearer);
+    if (payload) { req.user = payload; return next(); }
+  }
+  const secret = req.get('x-admin-secret') || req.query.secret;
+  if (secret && process.env.ADMIN_SECRET && secret === process.env.ADMIN_SECRET) return next();
+  return res.status(401).json({ error: 'unauthorized' });
+});
+
+// After auth — who am I?
+dashboardApi.get('/me', (req, res) => res.json({ email: req.user?.email || null }));
 
 const wrap = (fn) => async (req, res) => {
   try { res.json(await fn(req)); }

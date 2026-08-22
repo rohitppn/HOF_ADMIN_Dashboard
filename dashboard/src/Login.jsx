@@ -1,20 +1,20 @@
 import React, { useState } from 'react';
-import { setSecret, api } from './api.js';
+import { api } from './api.js';
 
 export default function Login({ onSuccess }) {
-  const [value, setValue] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
 
   async function submit(e) {
     e.preventDefault();
     setBusy(true); setErr('');
-    setSecret(value.trim());
     try {
-      await api.health();
+      await api.login(email.trim(), password);
       onSuccess();
     } catch (e) {
-      setErr('Invalid secret. Check ADMIN_SECRET in your Railway env.');
+      setErr(e.message || 'Login failed');
     } finally { setBusy(false); }
   }
 
@@ -22,16 +22,24 @@ export default function Login({ onSuccess }) {
     <div className="login-shell">
       <form className="login-card" onSubmit={submit}>
         <h1>HOF ADMIN</h1>
-        <p>Enter the admin secret to continue. It matches the <code>ADMIN_SECRET</code> environment variable on the server.</p>
+        <p>Sign in with the admin email and password set in your Railway env.</p>
+        <input
+          type="email"
+          placeholder="email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          autoFocus
+          required
+        />
         <input
           type="password"
-          placeholder="admin secret"
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          autoFocus
+          placeholder="password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          required
         />
-        <button type="submit" disabled={busy || !value.trim()}>
-          {busy ? 'Checking…' : 'Continue'}
+        <button type="submit" disabled={busy || !email || !password}>
+          {busy ? 'Signing in…' : 'Sign in'}
         </button>
         {err && <div className="error">{err}</div>}
       </form>
