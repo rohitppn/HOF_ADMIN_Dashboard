@@ -1,16 +1,19 @@
 {
-  "name": "hof-ops-bot",
+  "name": "hof-admin",
   "version": "0.1.0",
-  "description": "House of Fett WhatsApp ops bot — sales tracking, compliance, rankings",
+  "description": "HOF ADMIN — House of Fett WhatsApp ops bot + dashboard (sales, compliance, rankings, analytics)",
   "main": "src/server.js",
   "type": "module",
   "scripts": {
     "start": "node src/server.js",
-    "dev": "node --watch src/server.js"
+    "dev": "node --watch src/server.js",
+    "backfill": "node scripts/backfill.js",
+    "build:dashboard": "cd dashboard && npm install && npm run build"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.1",
     "@hapi/boom": "^10.0.1",
+    "@supabase/supabase-js": "^2.45.4",
     "@whiskeysockets/baileys": "^6.7.9",
     "better-sqlite3": "^11.5.0",
     "dotenv": "^16.4.5",

@@ -2,39 +2,47 @@ import Anthropic from '@anthropic-ai/sdk';
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-const PARSER_SYSTEM = `You are a strict message classifier and data extractor for a retail ops bot.
+const PARSER_SYSTEM = `You extract structured data from WhatsApp messages sent by Indian retail store managers to an ops group.
 
-You receive a single WhatsApp message from a store group. Your only job is to identify the message intent and extract structured fields. You NEVER invent data. If a field is not present, return null for that field.
+The most common format looks like this (but many variations exist):
+    Date:- 21/08/2026
+    Ambi VK
+    Today's Target: 110k
+    Achieved Till Now: 29993
+    Walk-ins : 6
+    Bills : 5
 
-Allowed intents (return exactly one):
-- "opening_balance"  — staff reporting the cash opening balance for the day
-- "store_open"       — staff confirming the store has been opened
-- "hourly_sales"     — an hourly sales update (sales figure, sometimes bills/walkins)
-- "big_bill"         — a single high-value bill being reported
-- "grooming"         — grooming compliance confirmation (yes/no + notes)
-- "dsr"              — end-of-day Daily Sales Report (totals)
-- "other"            — anything else (greetings, chatter, unclear)
+You NEVER invent data. Any field not clearly present is null.
 
-Output strictly as compact JSON. Schema:
+Output STRICTLY as compact JSON, no code fences, no prose:
 {
-  "intent": "<one of the above>",
-  "amount": <number|null>,            // rupees, integer
-  "bills": <number|null>,             // bill count
-  "walkins": <number|null>,           // walkin count
-  "compliant": <true|false|null>,     // for grooming
-  "notes": "<string|null>",           // short note if any
-  "confidence": <0..1>
+  "intent":     "opening_balance" | "store_open" | "hourly_sales" | "big_bill" | "grooming" | "dsr" | "other",
+  "date":       "YYYY-MM-DD" | null,   // parsed from any explicit "Date" field in the message; null if absent
+  "amount":     integer | null,        // rupees
+  "bills":      integer | null,
+  "walkins":    integer | null,
+  "compliant":  true | false | null,   // grooming only
+  "notes":      string | null,
+  "confidence": 0..1
 }
 
-Rules:
-- Indian number formats: "1.2L" = 120000, "1,20,000" = 120000, "12k" = 12000.
-- If the message says "opening balance 5000" → opening_balance, amount 5000.
-- If the message says "store opened" / "shop open" / "shutter up" → store_open.
-- If the message says "till 2pm sales 45000, bills 6, walkins 12" → hourly_sales.
-- Major sale alerts like "big bill 35000" or "₹40,000 sale done" → big_bill.
-- "grooming done" / "all groomed" → grooming, compliant true. "2 not in uniform" → compliant false, notes set.
-- DSR usually contains total sales for the day, total bills, walkins.
-- Output JSON only. No prose, no code fences.`;
+Intent rules:
+- "Achieved Till Now" / "Sales till now" / "Total sales" / any cumulative running total for the day → "dsr" and amount = that number
+- "Opening balance" / "Cash on hand" (start of day) → "opening_balance"
+- "Store opened" / "shop open" / "shutter up" → "store_open"
+- A single high-value bill being highlighted (₹25,000 or more) → "big_bill", amount = the bill value
+- Grooming / uniform compliance ("all groomed", "2 not in uniform") → "grooming", compliant = true/false, notes if any
+- End-of-day summary explicitly labelled DSR or "Final total" → "dsr"
+- Greetings, chatter, target-only messages, anything unclear → "other"
+
+Field rules:
+- Indian number formats: 1.2L = 120000, 1,20,000 = 120000, 12k = 12000, 29993 = 29993.
+- Ignore "Today's Target" — never treat the target as the amount.
+- Ignore the store name line — the caller already knows the store from the sender.
+- Date format is Indian DD/MM/YYYY: "21/08/2026" → "2026-08-21", "5/9/25" → "2025-09-05".
+- If bills or walk-ins are missing, return null (not 0).
+
+Output JSON only.`;
 
 export async function parseMessage(text) {
   const resp = await client.messages.create({
@@ -46,8 +54,16 @@ export async function parseMessage(text) {
   const out = resp.content?.[0]?.text?.trim() ?? '';
   try {
     const cleaned = out.replace(/^```json\s*/i, '').replace(/```$/, '').trim();
-    return JSON.parse(cleaned);
+    const parsed = JSON.parse(cleaned);
+    // Defensive normalisation — the model occasionally puts numbers as strings.
+    for (const k of ['amount', 'bills', 'walkins']) {
+      if (parsed[k] != null && typeof parsed[k] !== 'number') {
+        const n = Number(String(parsed[k]).replace(/[^\d.-]/g, ''));
+        parsed[k] = Number.isFinite(n) ? Math.round(n) : null;
+      }
+    }
+    return parsed;
   } catch {
-    return { intent: 'other', amount: null, bills: null, walkins: null, compliant: null, notes: null, confidence: 0 };
+    return { intent: 'other', date: null, amount: null, bills: null, walkins: null, compliant: null, notes: null, confidence: 0 };
   }
 }

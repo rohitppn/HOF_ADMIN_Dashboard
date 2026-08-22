@@ -8,9 +8,24 @@ import { initSheets } from './sheets.js';
 import { startSchedulers } from './jobs/scheduler.js';
 import { dailyRanking } from './calc.js';
 import { todayDate } from './util.js';
+import { dashboardApi } from './dashboard-api.js';
+import { loadStores } from './config.js';
 
 const app = express();
 app.use(express.json());
+
+// Dashboard: JSON API + static React build served from /dashboard.
+app.use('/dashboard-api', dashboardApi);
+const dashboardDist = path.resolve('dashboard/dist');
+if (fs.existsSync(dashboardDist)) {
+  app.use('/dashboard', express.static(dashboardDist));
+  // SPA fallback so client-side routes work.
+  app.get('/dashboard/*', (req, res) => res.sendFile(path.join(dashboardDist, 'index.html')));
+} else {
+  app.get('/dashboard*', (req, res) => res.status(503).send(
+    'Dashboard not built. Run `npm run build:dashboard` from the project root.'
+  ));
+}
 
 app.get('/health', (req, res) => {
   res.json({ ok: true, bot: !!getSock(), status: getConnectionStatus(), time: new Date().toISOString() });
@@ -55,15 +70,15 @@ app.get('/qr', async (req, res) => {
 // Open all QR variants in separate tabs (one per group/store admin needs to see).
 // Placeholder for future use — for now just provides a quick index page.
 app.get('/', (req, res) => {
-  const port = process.env.PORT || 3001;
-  res.send(`<!doctype html><html><head><meta charset="utf-8"><title>HOF Admin</title>
-<style>body{font-family:system-ui;padding:32px;background:#0b0b0b;color:#eaeaea}a{color:#7ab7ff;display:block;margin:8px 0}</style>
+  res.send(`<!doctype html><html><head><meta charset="utf-8"><title>HOF ADMIN</title>
+<style>body{font-family:system-ui;padding:32px;background:#0b0b0b;color:#eaeaea}a{color:#7ab7ff;display:block;margin:8px 0;font-size:15px}h1{margin-bottom:24px}</style>
 </head><body>
-<h1>HOF Admin</h1>
+<h1>HOF ADMIN</h1>
+<a href="/dashboard/" target="_blank">📊 Dashboard</a>
 <a href="/qr" target="_blank">Scan WhatsApp QR</a>
 <a href="/health" target="_blank">Health</a>
 <a href="/admin/groups?secret=${process.env.ADMIN_SECRET || ''}" target="_blank">List groups (after bot connects)</a>
-<a href="/admin/ranking?secret=${process.env.ADMIN_SECRET || ''}" target="_blank">Today's ranking</a>
+<a href="/admin/ranking?secret=${process.env.ADMIN_SECRET || ''}" target="_blank">Today's ranking (JSON)</a>
 <a href="/admin/relogin?secret=${process.env.ADMIN_SECRET || ''}" target="_blank">Reset session (wipe auth + new QR)</a>
 </body></html>`);
 });
@@ -101,28 +116,37 @@ app.get('/admin/relogin', (req, res) => {
   }
 });
 
-app.get('/admin/ranking', (req, res) => {
+app.get('/admin/ranking', async (req, res) => {
   if (process.env.ADMIN_SECRET && req.query.secret !== process.env.ADMIN_SECRET) {
     return res.status(403).json({ error: 'forbidden' });
   }
   const date = req.query.date || todayDate();
-  res.json({ date, rows: dailyRanking(date) });
+  try {
+    res.json({ date, rows: await dailyRanking(date) });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 const PORT = process.env.PORT || 3001;
 
 (async () => {
+  // Load the store list from Supabase (seeds the table on first boot).
+  // Everything downstream (bot routing, scheduler, dashboard) reads from this cache.
+  try { await loadStores(); }
+  catch (e) { console.error('[boot] failed to load stores:', e.message); }
+
   await initSheets();
   await startBot();
   startSchedulers();
 
-  // Print whitelist for sanity-check on boot.
-  const { STORES, MANAGER_GROUP_JID, OWNERS } = await import('./config.js');
-  console.log('[config] owners:', OWNERS.length ? OWNERS.join(', ') : '(none — set OWNERS in .env)');
-  console.log('[config] manager group:', MANAGER_GROUP_JID || '(none — set MANAGER_GROUP_JID in .env)');
-  console.log('[config] stores active:', STORES.length
-    ? STORES.map((s) => `${s.key}=${s.groupJid}`).join('\n  ')
-    : '(none — set STORE_*_JID in .env)');
+  // Print config summary for sanity-check on boot.
+  const { STORES, MAIN_GROUP_JID, MANAGER_GROUP_JID, OWNERS } = await import('./config.js');
+  console.log('[config] owners:         ', OWNERS.length ? OWNERS.join(', ') : '(none — set OWNERS in .env)');
+  console.log('[config] main group:     ', MAIN_GROUP_JID     || '(none — set MAIN_GROUP_JID in .env)');
+  console.log('[config] manager group:  ', MANAGER_GROUP_JID  || '(same as main)');
+  console.log(`[config] stores loaded:   ${STORES.length}`);
+  for (const s of STORES) console.log(`  ${s.key.padEnd(14)} ${s.phone.padEnd(12)} ${s.name}`);
 
   app.listen(PORT, () => console.log(`[server] listening on ${PORT}`));
 })();

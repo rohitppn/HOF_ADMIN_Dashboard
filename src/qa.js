@@ -2,7 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import fs from 'node:fs';
 import path from 'node:path';
 import { STORES, storeByKey } from './config.js';
-import { queries } from './db.js';
+import { queries } from './supabase.js';
 import { dailyRanking, consistencyScore, missingReports, dailyTotalsFromHourly } from './calc.js';
 import { templates } from './templates.js';
 import { todayDate, formatINR } from './util.js';
@@ -86,7 +86,7 @@ export async function answerQuestion(text) {
     case 'today_overview':
     case 'ranking': {
       const date = q.date || todayDate();
-      const rows = dailyRanking(date);
+      const rows = await dailyRanking(date);
       if (q.wants_csv) {
         const file = writeCsv(
           `ranking-${date}.csv`,
@@ -101,15 +101,15 @@ export async function answerQuestion(text) {
       const store = storeByKey(q.store_key);
       if (!store) return { reply: templates.qaUnknownStore() };
       const date = q.date || todayDate();
-      const totals = dailyTotalsFromHourly(date).get(store.key);
-      const dsr = queries.dsrForDate(date).find((r) => r.store_key === store.key);
+      const totals = (await dailyTotalsFromHourly(date)).get(store.key);
+      const dsr = (await queries.dsrForDate(date)).find((r) => r.store_key === store.key);
       return { reply: templates.storeSnapshot({ store, date, totals, dsr }) };
     }
 
     case 'store_range': {
       const store = storeByKey(q.store_key);
       if (!store || !q.from || !q.to) return { reply: templates.qaNeedRange({ stores: STORES.map((s) => s.key) }) };
-      const rows = queries.dsrRange(q.from, q.to).filter((r) => r.store_key === store.key);
+      const rows = (await queries.dsrRange(q.from, q.to)).filter((r) => r.store_key === store.key);
       if (!rows.length) return { reply: templates.qaNoData({ scope: `${store.name} ${q.from} to ${q.to}` }) };
       if (q.wants_csv) {
         const file = writeCsv(
@@ -123,7 +123,7 @@ export async function answerQuestion(text) {
 
     case 'big_bills': {
       const date = q.date || todayDate();
-      const rows = queries.bigBillsForDate(date).map((r) => ({ ...r, store: STORES.find((s) => s.key === r.store_key)?.name || r.store_key }));
+      const rows = (await queries.bigBillsForDate(date)).map((r) => ({ ...r, store: STORES.find((s) => s.key === r.store_key)?.name || r.store_key }));
       return { reply: templates.bigBillList({ date, rows }) };
     }
 
@@ -131,7 +131,7 @@ export async function answerQuestion(text) {
       const date = todayDate();
       const sections = [];
       for (const kind of ['opening', 'grooming', 'dsr']) {
-        const m = missingReports(date, kind);
+        const m = await missingReports(date, kind);
         if (m.length) sections.push(templates.missingReport({ kind, stores: m }));
       }
       return { reply: sections.length ? sections.join('\n\n') : `All reports received for ${date}.` };
@@ -140,7 +140,7 @@ export async function answerQuestion(text) {
     case 'consistency': {
       const from = q.from, to = q.to;
       if (!from || !to) return { reply: templates.qaNeedRange({ stores: STORES.map((s) => s.key) }) };
-      const rows = consistencyScore(from, to);
+      const rows = await consistencyScore(from, to);
       if (q.wants_csv) {
         const file = writeCsv(`consistency-${from}_to_${to}.csv`, csv(rows, ['store', 'days', 'hit', 'consistency_pct', 'avg_sales', 'target']));
         return { reply: templates.reportSent({ filename: path.basename(file) }), dm: { filePath: file, caption: `Consistency ${from} to ${to}` } };
@@ -150,7 +150,7 @@ export async function answerQuestion(text) {
 
     case 'hourly': {
       const date = q.date || todayDate();
-      const all = queries.hourlyForDate(date);
+      const all = await queries.hourlyForDate(date);
       const filtered = q.store_key ? all.filter((r) => r.store_key === q.store_key) : all;
       if (!filtered.length) return { reply: templates.qaNoData({ scope: `hourly ${date}` }) };
       if (q.wants_csv) {
@@ -163,7 +163,7 @@ export async function answerQuestion(text) {
 
     case 'csv_dump': {
       const date = q.date || todayDate();
-      const rows = dailyRanking(date);
+      const rows = await dailyRanking(date);
       const file = writeCsv(`full-${date}.csv`,
         csv(rows, ['rank', 'store', 'total_sales', 'target', 'achievement_pct', 'total_bills', 'walkins', 'conversion', 'source']));
       return { reply: templates.reportSent({ filename: path.basename(file) }), dm: { filePath: file, caption: `Full data — ${date}` } };

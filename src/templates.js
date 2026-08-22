@@ -2,10 +2,27 @@
 // All bot output MUST go through one of these. Do not emit free-form text.
 
 import { formatINR } from './util.js';
-import { STORES } from './config.js';
+import { STORES, intlPhone } from './config.js';
 
 const storeKeys = () => STORES.map((s) => s.key);
 const storeNameOf = (key) => STORES.find((s) => s.key === key)?.name || key;
+
+// Format an hour as "4 PM", "12 PM", "10 AM" etc.
+function hourLabel(h) {
+  if (h === 0) return '12 AM';
+  if (h < 12)  return `${h} AM`;
+  if (h === 12) return '12 PM';
+  return `${h - 12} PM`;
+}
+
+// Build @<phone> tokens for every store — inline text WhatsApp will render as
+// mentions (styled with each contact's saved name). Pair with `mentionJids`
+// so the message carries the mentionedJid contextInfo Baileys needs.
+export function storeMentions() {
+  const jids = STORES.map((s) => `${intlPhone(s.phone)}@s.whatsapp.net`);
+  const text = STORES.map((s) => `@${intlPhone(s.phone)}`).join(' ');
+  return { text, jids };
+}
 
 export const templates = {
   // ─── store group prompts ────────────────────────────────────────────
@@ -15,8 +32,15 @@ export const templates = {
   promptStoreOpen: () =>
     `Reminder: please confirm store opening before 10:30 AM.`,
 
-  promptHourly: (slotLabel) =>
-    `Hourly check-in (${slotLabel}). Please share sales, bill count, and walk-ins so far today.`,
+  // Called by the scheduler with the slot's hour (24h). Returns the text and
+  // the mention JIDs together so the sender can attach both.
+  promptHourly: (slotHour) => {
+    const { text: mentions, jids } = storeMentions();
+    const from = ((slotHour - 1) + 24) % 24;
+    const to   = slotHour;
+    const body = `${mentions} please send your hourly sales report for ${hourLabel(from)}-${hourLabel(to)}.`;
+    return { text: body, mentions: jids };
+  },
 
   promptGrooming: () =>
     `Please confirm grooming compliance for the team on shift today.`,

@@ -1,10 +1,10 @@
-import { queries } from './db.js';
+import { queries } from './supabase.js';
 import { STORES, storeByKey } from './config.js';
 import { pct } from './util.js';
 
 // Daily totals per store from hourly_sales (running total during day, before DSR lands).
-export function dailyTotalsFromHourly(date) {
-  const rows = queries.hourlyForDate(date);
+export async function dailyTotalsFromHourly(date) {
+  const rows = await queries.hourlyForDate(date);
   const map = new Map();
   for (const r of rows) {
     const m = map.get(r.store_key) ?? { sales: 0, bills: 0, walkins: 0 };
@@ -17,10 +17,12 @@ export function dailyTotalsFromHourly(date) {
 }
 
 // Final daily ranking — prefers DSR; falls back to hourly aggregate if DSR not posted.
-export function dailyRanking(date) {
-  const dsrRows = queries.dsrForDate(date);
+export async function dailyRanking(date) {
+  const [dsrRows, hourly] = await Promise.all([
+    queries.dsrForDate(date),
+    dailyTotalsFromHourly(date),
+  ]);
   const dsrMap = new Map(dsrRows.map((r) => [r.store_key, r]));
-  const hourly = dailyTotalsFromHourly(date);
 
   const rows = STORES.map((s) => {
     const d = dsrMap.get(s.key);
@@ -52,8 +54,8 @@ export function dailyRanking(date) {
 }
 
 // Consistency score across a date range — % of days each store hit ≥ daily target.
-export function consistencyScore(fromDate, toDate) {
-  const rows = queries.dsrRange(fromDate, toDate);
+export async function consistencyScore(fromDate, toDate) {
+  const rows = await queries.dsrRange(fromDate, toDate);
   const map = new Map();
   for (const r of rows) {
     const s = storeByKey(r.store_key);
@@ -72,17 +74,20 @@ export function consistencyScore(fromDate, toDate) {
 }
 
 // Which stores haven't reported a given thing today.
-export function missingReports(date, kind) {
+export async function missingReports(date, kind) {
   let presentKeys;
   if (kind === 'opening') {
-    presentKeys = new Set(queries.storeOpenForDate(date).map((r) => r.store_key));
+    const rows = await queries.storeOpenForDate(date);
+    presentKeys = new Set(rows.map((r) => r.store_key));
   } else if (kind === 'grooming') {
-    presentKeys = new Set(queries.groomingForDate(date).map((r) => r.store_key));
+    const rows = await queries.groomingForDate(date);
+    presentKeys = new Set(rows.map((r) => r.store_key));
   } else if (kind === 'dsr') {
-    presentKeys = new Set(queries.dsrForDate(date).map((r) => r.store_key));
+    const rows = await queries.dsrForDate(date);
+    presentKeys = new Set(rows.map((r) => r.store_key));
   } else if (kind?.startsWith('hourly:')) {
     const slot = kind.split(':')[1];
-    const rows = queries.hourlyForDate(date).filter((r) => r.slot === slot);
+    const rows = (await queries.hourlyForDate(date)).filter((r) => r.slot === slot);
     presentKeys = new Set(rows.map((r) => r.store_key));
   } else {
     presentKeys = new Set();

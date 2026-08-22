@@ -13,12 +13,17 @@ import { ingestStoreMessage } from './parser.js';
 import { handleOwnerCommand } from './commands.js';
 import { answerQuestion } from './qa.js';
 import { templates } from './templates.js';
-import { MANAGER_GROUP_JID, storeByJid, isOwner, isAllowedGroup } from './config.js';
+import { MAIN_GROUP_JID, MANAGER_GROUP_JID, storeByPhone, isOwner, isAllowedGroup } from './config.js';
 
 const logger = pino({ level: 'warn' });
 let sock = null;
 let latestQr = null;
 let lastConnectionStatus = 'starting';
+
+// Reconnect backoff — WhatsApp rate-limits fast reconnects and will eventually
+// stream-error the client. We back off up to 60s and reset once we're stable.
+let reconnectAttempts = 0;
+let stableSinceOpenTimer = null;
 
 export function getLatestQr() { return latestQr; }
 export function getConnectionStatus() { return lastConnectionStatus; }
@@ -34,8 +39,19 @@ export async function startBot() {
     version,
     auth: state,
     logger,
-    printQRInTerminal: false,
     markOnlineOnConnect: false,
+    syncFullHistory: false,
+    defaultQueryTimeoutMs: 60_000,
+    connectTimeoutMs: 60_000,
+    keepAliveIntervalMs: 15_000,
+    emitOwnEvents: false,
+    // Stable device identity — shows up as "HOF ADMIN" in WhatsApp → Linked
+    // Devices, and keeps the session valid across restarts so one QR scan lasts.
+    browser: ['HOF ADMIN', 'Desktop', '1.0.0'],
+    // Baileys retries decryption on missed messages. Without this, it tries to
+    // re-fetch from an in-memory store we don't run, throws, and cascades into
+    // a stream error → forced reconnect. Returning empty tells it "give up".
+    getMessage: async () => ({ conversation: '' }),
   });
 
   sock.ev.on('creds.update', saveCreds);
@@ -61,12 +77,22 @@ export async function startBot() {
       lastConnectionStatus = 'disconnected';
       const code = new Boom(lastDisconnect?.error)?.output?.statusCode;
       const shouldReconnect = code !== DisconnectReason.loggedOut;
-      console.log('[bot] disconnected, reconnect=', shouldReconnect);
-      if (shouldReconnect) startBot();
+      if (stableSinceOpenTimer) { clearTimeout(stableSinceOpenTimer); stableSinceOpenTimer = null; }
+      console.log(`[bot] disconnected code=${code} reconnect=${shouldReconnect} attempt=${reconnectAttempts + 1}`);
+      if (shouldReconnect) {
+        const delay = Math.min(60_000, 1000 * Math.pow(2, reconnectAttempts));
+        reconnectAttempts += 1;
+        setTimeout(() => {
+          startBot().catch((e) => console.error('[bot] restart failed:', e));
+        }, delay);
+      }
     } else if (connection === 'open') {
       lastConnectionStatus = 'connected';
       latestQr = null;
       console.log('[bot] connected');
+      // Only reset backoff once the connection has held for 30s — a session that
+      // opens then dies inside that window is still unstable.
+      stableSinceOpenTimer = setTimeout(() => { reconnectAttempts = 0; }, 30_000);
     } else if (connection === 'connecting') {
       lastConnectionStatus = 'connecting';
     }
@@ -97,12 +123,13 @@ async function handleMessage(m) {
 
   if (!text) return;
 
-  // Strict group whitelist: any group not in .env is fully ignored.
+  // Strict group whitelist — messages from any other group are fully ignored,
+  // so the bot never sees them, never parses them, never spends tokens on them.
   if (isGroup && !isAllowedGroup(jid)) return;
 
-  // Owner slash commands — only in leadership group or direct DM.
+  // Owner slash commands — only in the leadership group or a direct DM.
   if (text.trim().startsWith('/') && (!isGroup || jid === MANAGER_GROUP_JID)) {
-    const result = handleOwnerCommand({ text, senderPhone });
+    const result = await handleOwnerCommand({ text, senderPhone });
     if (result) {
       await sock.sendMessage(jid, { text: result.reply });
       if (result.dm) {
@@ -119,9 +146,11 @@ async function handleMessage(m) {
   }
 
   // Owner natural-language Q&A: leadership group OR a DM from an owner.
-  const inLeadership = isGroup && jid === MANAGER_GROUP_JID;
+  // Only fires when the sender is a listed owner, so store managers' updates
+  // don't accidentally trip the Q&A path.
+  const inLeadership = isGroup && jid === MANAGER_GROUP_JID && isOwner(senderPhone);
   const inOwnerDm = !isGroup && isOwner(senderPhone);
-  if ((inLeadership && isOwner(senderPhone)) || inOwnerDm) {
+  if (inLeadership || inOwnerDm) {
     try {
       const result = await answerQuestion(text);
       if (result?.reply) {
@@ -142,9 +171,13 @@ async function handleMessage(m) {
     return;
   }
 
-  // Store group ingest.
-  if (isGroup && storeByJid(jid)) {
-    const result = await ingestStoreMessage({ jid, sender: senderPhone, text });
+  // Store update — inside the main group, only messages from known store phones
+  // get parsed. Everyone else in the group is silently ignored (token saver).
+  if (isGroup && jid === MAIN_GROUP_JID) {
+    const store = storeByPhone(senderPhone);
+    if (!store) return;
+
+    const result = await ingestStoreMessage({ store, jid, sender: senderPhone, text });
     if (!result) return;
 
     if (result.intent !== 'other') {
@@ -163,7 +196,11 @@ async function handleMessage(m) {
 
 export function getSock() { return sock; }
 
-export async function sendTo(jid, text) {
+// sendTo accepts either a plain string (backwards compat with existing
+// templates that return text) or a { text, mentions } object for messages
+// that @mention specific users.
+export async function sendTo(jid, textOrMsg) {
   if (!sock) throw new Error('bot not started');
-  await sock.sendMessage(jid, { text });
+  const msg = typeof textOrMsg === 'string' ? { text: textOrMsg } : textOrMsg;
+  await sock.sendMessage(jid, msg);
 }

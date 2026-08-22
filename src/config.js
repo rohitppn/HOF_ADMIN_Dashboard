@@ -1,8 +1,9 @@
-// Single source of truth for stores, owners, groups, and targets.
-// Group JIDs and owner numbers come from .env so deployments can change them
-// without code changes. Store list (keys, names, targets) lives here because
-// it's business logic. To add a store: add a row in STORES below AND a matching
-// STORE_<KEY>_JID line in .env.
+// Runtime config. Stores are loaded from Supabase (see sql/002_stores.sql) at
+// boot and can be added / removed live from the dashboard. Group JIDs, owner
+// numbers and secrets stay in .env — those don't change often enough to warrant
+// a DB round-trip on every message.
+
+import { supabase } from './supabase.js';
 
 export const TIMEZONE = process.env.TZ || 'Asia/Kolkata';
 
@@ -12,50 +13,155 @@ export const OWNERS = (process.env.OWNERS || '')
   .map((s) => s.trim().replace(/\D/g, ''))
   .filter(Boolean);
 
-// Manager / leadership group JID — rankings and alerts go here.
-export const MANAGER_GROUP_JID = process.env.MANAGER_GROUP_JID || '';
+// The single WhatsApp group where all store managers post updates.
+export const MAIN_GROUP_JID = process.env.MAIN_GROUP_JID || '';
 
-// Helper: pull a store's JID from env by its key.
-const jidFor = (key) => process.env[`STORE_${key.toUpperCase()}_JID`] || '';
-
-// Stores. Each store has:
-//   key:           short slug used internally and in commands
-//   name:          display name shown in messages
-//   groupJid:      auto-loaded from .env (STORE_<KEY>_JID)
-//   dailyTarget:   ₹ per day (will become dynamic — see targets tab in Sheets)
-//   hourlyTarget:  ₹ per hour (used for the >50% rule on hourly check-ins)
-export const STORES = [
-  { key: 'cp',       name: 'Connaught Place', groupJid: jidFor('cp'),       dailyTarget: 150000, hourlyTarget: 18000 },
-  { key: 'jkmall',   name: 'JK Mall',         groupJid: jidFor('jkmall'),   dailyTarget: 120000, hourlyTarget: 15000 },
-  { key: 'dlf',      name: 'DLF Mall',        groupJid: jidFor('dlf'),      dailyTarget: 130000, hourlyTarget: 16000 },
-  { key: 'gip',      name: 'GIP',             groupJid: jidFor('gip'),      dailyTarget: 110000, hourlyTarget: 14000 },
-  { key: 'ambience', name: 'Ambience',        groupJid: jidFor('ambience'), dailyTarget: 140000, hourlyTarget: 17000 },
-].filter((s) => s.groupJid); // drop stores whose JID isn't set yet — bot ignores them safely
+// Leadership group for rankings + alerts + owner Q&A. Defaults to main group.
+export const MANAGER_GROUP_JID = process.env.MANAGER_GROUP_JID || MAIN_GROUP_JID;
 
 // Late-opening threshold (24h clock).
 export const OPENING_DEADLINE = { hour: 10, minute: 30 };
 
-// Hourly check-in slots (24h clock). Bot prompts stores at these times.
+// Hourly check-in slots — bot @mentions all stores in the main group at these times.
 export const HOURLY_SLOTS = [
-  { hour: 14, minute: 0 },
+  { hour: 13, minute: 0 },
   { hour: 15, minute: 0 },
   { hour: 17, minute: 0 },
   { hour: 19, minute: 0 },
+  { hour: 21, minute: 0 },
 ];
 
-// EOD job — when to ask for DSR and post daily ranking.
+// End-of-day job — when to ask for DSR and post daily ranking.
 export const EOD_TIME = { hour: 22, minute: 0 };
 
 // High-value bill threshold for "major sale" alerts.
 export const BIG_BILL_THRESHOLD = 25000;
 
-// All whitelisted group JIDs (manager + every store) — used for input-side guard.
-export const ALLOWED_JIDS = new Set(
-  [MANAGER_GROUP_JID, ...STORES.map((s) => s.groupJid)].filter(Boolean)
-);
+// ────────────────────────────────────────────────────────────────
+// STORES — mutable, loaded from DB. Uses splice() so `STORES` keeps
+// the same array reference and existing imports see updates live.
+// ────────────────────────────────────────────────────────────────
 
-// Helpers
-export const storeByJid = (jid) => STORES.find((s) => s.groupJid === jid);
-export const storeByKey = (key) => STORES.find((s) => s.key === key);
-export const isOwner = (phone) => OWNERS.includes(String(phone).replace(/\D/g, ''));
+export const STORES = [];
+const phoneMap = new Map();
+
+// Digits-only phone.
+const digits = (s) => String(s || '').replace(/\D/g, '');
+
+// Return the full international phone (adds "91" prefix if missing).
+export const intlPhone = (phone) => {
+  const p = digits(phone);
+  return p.startsWith('91') ? p : '91' + p;
+};
+
+function rebuildPhoneMap() {
+  phoneMap.clear();
+  for (const s of STORES) {
+    const p = digits(s.phone);
+    phoneMap.set(p, s);
+    if (!p.startsWith('91')) phoneMap.set('91' + p, s);
+  }
+}
+
+// Seed data lives in src/seed-stores.js which is GITIGNORED — the file may not
+// exist in a fresh clone, so we import lazily inside loadStores(). If missing
+// or empty, first boot leaves the DB empty and the user adds stores from the
+// dashboard's Manage tab.
+
+function dbToStore(row) {
+  return {
+    key: row.key,
+    name: row.name,
+    phone: row.phone,
+    dailyTarget: row.daily_target,
+    hourlyTarget: row.hourly_target,
+    active: row.active !== false,
+  };
+}
+
+// Load active stores from Supabase into memory. Seeds the table on first boot
+// if it's empty. Call at server startup AND after each add/remove mutation so
+// the bot immediately routes to the new list.
+export async function loadStores() {
+  const { data, error } = await supabase.from('stores').select('*').eq('active', true).order('name');
+  if (error) throw new Error(`[stores] load failed: ${error.message}`);
+
+  let rows = data;
+  if (!rows.length) {
+    // Try loading the gitignored seed file. Absent on a fresh clone — that's OK.
+    let seed = [];
+    try { ({ SEED_STORES: seed } = await import('./seed-stores.js')); } catch { /* no seed */ }
+    if (seed.length) {
+      console.log(`[stores] table empty — seeding with ${seed.length} stores from seed-stores.js`);
+      const { error: seedErr } = await supabase.from('stores').upsert(seed, { onConflict: 'key' });
+      if (seedErr) throw new Error(`[stores] seed failed: ${seedErr.message}`);
+      const reload = await supabase.from('stores').select('*').eq('active', true).order('name');
+      if (reload.error) throw new Error(`[stores] reload failed: ${reload.error.message}`);
+      rows = reload.data || [];
+    } else {
+      console.log('[stores] table empty and no seed file — add stores from the dashboard Manage tab');
+    }
+  }
+
+  STORES.splice(0, STORES.length, ...rows.map(dbToStore));
+  rebuildPhoneMap();
+  console.log(`[stores] loaded ${STORES.length} active`);
+  return STORES;
+}
+
+// Add a store. Validates required fields, upserts into DB, refreshes cache.
+export async function addStore({ key, name, phone, daily_target, hourly_target }) {
+  if (!key || !name || !phone) throw new Error('key, name, phone are required');
+  const cleanKey = String(key).trim().toLowerCase().replace(/[^a-z0-9_]/g, '_');
+  const cleanPhone = digits(phone);
+  if (cleanPhone.length < 10) throw new Error('phone must be at least 10 digits');
+  const row = {
+    key: cleanKey,
+    name: String(name).trim(),
+    phone: cleanPhone,
+    daily_target: Number(daily_target) || 100000,
+    hourly_target: Number(hourly_target) || 12000,
+    active: true,
+  };
+  const { error } = await supabase.from('stores').upsert(row, { onConflict: 'key' });
+  if (error) throw new Error(error.message);
+  await loadStores();
+  return row;
+}
+
+// Soft-delete a store — bot immediately stops routing to it. Historical rows
+// keep their store_key so past sales stay in the dashboard.
+export async function deactivateStore(key) {
+  if (!key) throw new Error('key required');
+  const { error } = await supabase.from('stores').update({ active: false, updated_at: new Date().toISOString() }).eq('key', key);
+  if (error) throw new Error(error.message);
+  await loadStores();
+}
+
+// Reactivate a previously deleted store.
+export async function reactivateStore(key) {
+  if (!key) throw new Error('key required');
+  const { error } = await supabase.from('stores').update({ active: true, updated_at: new Date().toISOString() }).eq('key', key);
+  if (error) throw new Error(error.message);
+  await loadStores();
+}
+
+// Return every store row (including inactive) — for the manage-stores view.
+export async function listAllStores() {
+  const { data, error } = await supabase.from('stores').select('*').order('active', { ascending: false }).order('name');
+  if (error) throw new Error(error.message);
+  return (data || []).map((r) => ({ ...dbToStore(r), created_at: r.created_at, updated_at: r.updated_at }));
+}
+
+// Lookups — always read from the mutable STORES / phoneMap so they see the
+// latest state without callers having to re-import.
+export const storeByPhone = (phone) => phoneMap.get(digits(phone)) || null;
+export const storeByKey   = (key)   => STORES.find((s) => s.key === key) || null;
+export const storeByJid   = ()      => null;  // compat stub — single-group model
+export const isOwner      = (phone) => OWNERS.includes(digits(phone));
+
+// Group whitelist.
+export const ALLOWED_JIDS = new Set(
+  [MAIN_GROUP_JID, MANAGER_GROUP_JID].filter(Boolean)
+);
 export const isAllowedGroup = (jid) => ALLOWED_JIDS.has(jid);

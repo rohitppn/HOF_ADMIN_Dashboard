@@ -1,25 +1,26 @@
 import { parseMessage } from './claude.js';
-import { queries } from './db.js';
+import { queries } from './supabase.js';
 import { appendRow } from './sheets.js';
-import { storeByJid, OPENING_DEADLINE, HOURLY_SLOTS, BIG_BILL_THRESHOLD } from './config.js';
+import { OPENING_DEADLINE, HOURLY_SLOTS, BIG_BILL_THRESHOLD } from './config.js';
 import { todayDate, nowIso, nowHm, nearestSlotLabel } from './util.js';
 
-// Returns { intent, store, parsed, alert? } or null if message is not from a known store group.
-export async function ingestStoreMessage({ jid, sender, text }) {
-  const store = storeByJid(jid);
+// Store is passed in by the router (bot.js) after resolving by sender phone.
+// Returns { intent, store, parsed, alert? } or null if no store supplied.
+export async function ingestStoreMessage({ store, jid, sender, text }) {
   if (!store) return null;
 
   const parsed = await parseMessage(text);
-  const date = todayDate();
+  // Prefer the message's own date if the manager wrote one; otherwise today.
+  const date = parsed.date || todayDate();
   const reported_at = nowIso();
 
-  queries.logMessage({
-    jid,
+  await queries.logMessage({
+    jid: jid || null,
     sender: sender || null,
     is_group: 1,
     text,
     intent: parsed.intent,
-    parsed_json: JSON.stringify(parsed),
+    parsed_json: parsed,
     received_at: reported_at,
   });
 
@@ -29,7 +30,7 @@ export async function ingestStoreMessage({ jid, sender, text }) {
     case 'opening_balance': {
       if (parsed.amount == null) break;
       const row = { store_key: store.key, date, amount: parsed.amount, reported_at, raw_text: text };
-      queries.saveOpeningBalance(row);
+      await queries.saveOpeningBalance(row);
       await appendRow('opening_balance', { date, store: store.name, amount: parsed.amount, reported_at, raw_text: text });
       break;
     }
@@ -38,7 +39,7 @@ export async function ingestStoreMessage({ jid, sender, text }) {
       const { hour, minute } = nowHm();
       const late = (hour > OPENING_DEADLINE.hour) || (hour === OPENING_DEADLINE.hour && minute > OPENING_DEADLINE.minute) ? 1 : 0;
       const row = { store_key: store.key, date, opened_at: reported_at, late, raw_text: text };
-      queries.saveStoreOpen(row);
+      await queries.saveStoreOpen(row);
       await appendRow('store_open', { date, store: store.name, opened_at: reported_at, late, raw_text: text });
       if (late) alert = { type: 'late_open', store, opened_at: reported_at };
       break;
@@ -57,7 +58,7 @@ export async function ingestStoreMessage({ jid, sender, text }) {
         reported_at,
         raw_text: text,
       };
-      queries.saveHourly(row);
+      await queries.saveHourly(row);
       await appendRow('hourly_sales', { date, store: store.name, slot, sales: parsed.amount, bills: parsed.bills, walkins: parsed.walkins, reported_at, raw_text: text });
 
       const pct = (parsed.amount / store.hourlyTarget) * 100;
@@ -68,7 +69,7 @@ export async function ingestStoreMessage({ jid, sender, text }) {
     case 'big_bill': {
       if (parsed.amount == null) break;
       const row = { store_key: store.key, date, amount: parsed.amount, reported_at, raw_text: text };
-      queries.saveBigBill(row);
+      await queries.saveBigBill(row);
       await appendRow('big_bills', { date, store: store.name, amount: parsed.amount, reported_at, raw_text: text });
       if (parsed.amount >= BIG_BILL_THRESHOLD) alert = { type: 'big_bill', store, amount: parsed.amount };
       break;
@@ -84,7 +85,7 @@ export async function ingestStoreMessage({ jid, sender, text }) {
         reported_at,
         raw_text: text,
       };
-      queries.saveGrooming(row);
+      await queries.saveGrooming(row);
       await appendRow('grooming', { date, store: store.name, compliant: row.compliant, notes: row.notes, reported_at, raw_text: text });
       break;
     }
@@ -102,7 +103,8 @@ export async function ingestStoreMessage({ jid, sender, text }) {
         reported_at,
         raw_text: text,
       };
-      queries.saveDsr(row);
+      // Upsert on (store, date) — each "Achieved Till Now" update overwrites the running total.
+      await queries.saveDsr(row);
       await appendRow('dsr', { date, store: store.name, total_sales: parsed.amount, total_bills: parsed.bills, walkins: parsed.walkins, conversion, reported_at, raw_text: text });
       break;
     }

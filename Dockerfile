@@ -2,16 +2,23 @@ FROM node:20-bookworm-slim
 
 WORKDIR /app
 
-# Install only production deps. Node 20 + glibc → better-sqlite3 prebuilt binary
-# is downloaded directly, no native compile, no python/node-gyp needed.
+# Root prod deps first — layer caches well when only source files change.
 COPY package*.json ./
 RUN npm ci --omit=dev
 
-# App source
+# Dashboard build deps (dev deps needed for Vite).
+# npm install (not npm ci) so this works before a package-lock.json is committed.
+COPY dashboard/package*.json ./dashboard/
+RUN cd dashboard && npm install
+
+# App source.
 COPY . .
 
-# Persistent dirs (Railway volumes mount over these)
-RUN mkdir -p auth data exports
+# Build the dashboard SPA, then delete build-only node_modules to shrink image.
+RUN cd dashboard && npm run build && rm -rf node_modules
+
+# Persistent dirs (Railway volumes mount over these). data/ is legacy — kept for reference.
+RUN mkdir -p auth exports
 
 EXPOSE 3001
 CMD ["npm", "start"]
