@@ -76,16 +76,38 @@ export async function startBot() {
     if (connection === 'close') {
       lastConnectionStatus = 'disconnected';
       const code = new Boom(lastDisconnect?.error)?.output?.statusCode;
-      const shouldReconnect = code !== DisconnectReason.loggedOut;
       if (stableSinceOpenTimer) { clearTimeout(stableSinceOpenTimer); stableSinceOpenTimer = null; }
-      console.log(`[bot] disconnected code=${code} reconnect=${shouldReconnect} attempt=${reconnectAttempts + 1}`);
-      if (shouldReconnect) {
-        const delay = Math.min(60_000, 1000 * Math.pow(2, reconnectAttempts));
-        reconnectAttempts += 1;
-        setTimeout(() => {
-          startBot().catch((e) => console.error('[bot] restart failed:', e));
-        }, delay);
+
+      // 401 = WhatsApp says this session is dead. Stale creds on the volume
+      // will keep triggering 401 forever, so wipe them and exit. Railway will
+      // restart the container with an empty auth folder → fresh QR.
+      if (code === DisconnectReason.loggedOut || code === 401) {
+        console.error('[bot] logged out (401) — wiping auth and exiting so Railway restarts fresh');
+        try {
+          for (const f of fs.readdirSync(authDir)) {
+            fs.rmSync(path.join(authDir, f), { recursive: true, force: true });
+          }
+        } catch (e) { console.error('[bot] wipe failed:', e.message); }
+        setTimeout(() => process.exit(0), 300);
+        return;
       }
+
+      // Cap runaway reconnect loops — after 30 attempts something is genuinely
+      // broken (WhatsApp rate limit, network, or a stale volume). Exit so
+      // Railway restarts fresh; the log stays readable.
+      const MAX = 30;
+      if (reconnectAttempts >= MAX) {
+        console.error(`[bot] ${MAX} reconnect attempts failed — exiting so Railway restarts`);
+        setTimeout(() => process.exit(1), 300);
+        return;
+      }
+
+      const delay = Math.min(60_000, 1000 * Math.pow(2, reconnectAttempts));
+      reconnectAttempts += 1;
+      console.log(`[bot] disconnected code=${code} reconnect=true attempt=${reconnectAttempts}/${MAX} in ${delay}ms`);
+      setTimeout(() => {
+        startBot().catch((e) => console.error('[bot] restart failed:', e));
+      }, delay);
     } else if (connection === 'open') {
       lastConnectionStatus = 'connected';
       latestQr = null;
