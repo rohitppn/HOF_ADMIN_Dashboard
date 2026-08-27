@@ -14,6 +14,9 @@ import { handleOwnerCommand } from './commands.js';
 import { answerQuestion } from './qa.js';
 import { templates } from './templates.js';
 import { MAIN_GROUP_JID, MANAGER_GROUP_JID, storeByPhone, isOwner, isAllowedGroup } from './config.js';
+import { parseMessage } from './parse-msg.js';
+import { queries } from './supabase.js';
+import { nowIso } from './util.js';
 
 const logger = pino({ level: 'warn' });
 let sock = null;

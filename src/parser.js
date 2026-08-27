@@ -1,28 +1,17 @@
-import { parseMessage } from './claude.js';
 import { queries } from './supabase.js';
 import { appendRow } from './sheets.js';
 import { OPENING_DEADLINE, HOURLY_SLOTS, BIG_BILL_THRESHOLD } from './config.js';
 import { todayDate, nowIso, nowHm, nearestSlotLabel } from './util.js';
 
-// Store is passed in by the router (bot.js) after resolving by sender phone.
-// Returns { intent, store, parsed, alert? } or null if no store supplied.
-export async function ingestStoreMessage({ store, jid, sender, text }) {
-  if (!store) return null;
+// Ingest data from a parsed message. Caller (bot.js) is responsible for
+// message logging so raw messages get recorded even when the sender isn't
+// a mapped store. This function only writes typed rows.
+export async function ingestStoreMessage({ store, text, parsed }) {
+  if (!store || !parsed) return null;
 
-  const parsed = await parseMessage(text);
   // Prefer the message's own date if the manager wrote one; otherwise today.
   const date = parsed.date || todayDate();
   const reported_at = nowIso();
-
-  await queries.logMessage({
-    jid: jid || null,
-    sender: sender || null,
-    is_group: 1,
-    text,
-    intent: parsed.intent,
-    parsed_json: parsed,
-    received_at: reported_at,
-  });
 
   let alert = null;
 
@@ -111,6 +100,18 @@ export async function ingestStoreMessage({ store, jid, sender, text }) {
 
     default:
       break;
+  }
+
+  // Multi-event: DSR/hourly messages that also announce a big bill in the same
+  // post (e.g. celebration format with "Wow Big Bill Value 25197" + "Achieved
+  // Till Now 46441") — save the big bill separately so it shows in Big Bills view.
+  if (parsed.bigBillAmount != null && parsed.intent !== 'big_bill') {
+    const bbRow = { store_key: store.key, date, amount: parsed.bigBillAmount, reported_at, raw_text: text };
+    await queries.saveBigBill(bbRow);
+    await appendRow('big_bills', { date, store: store.name, amount: parsed.bigBillAmount, reported_at, raw_text: text });
+    if (parsed.bigBillAmount >= BIG_BILL_THRESHOLD) {
+      alert = { type: 'big_bill', store, amount: parsed.bigBillAmount };
+    }
   }
 
   return { intent: parsed.intent, store, parsed, alert };

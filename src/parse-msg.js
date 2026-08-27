@@ -13,6 +13,16 @@
 // Plus casual variants: "sales 25000, bills 4, walkins 8", "opening balance 5000",
 // "store opened at 10:15", "grooming done", "big bill 45000", etc.
 
+// --- text normalisation ---
+
+// Convert keycap emoji digits (2️⃣) to plain digits, strip zero-width joiners.
+// So "Value – 2️⃣5️⃣1️⃣9️⃣7️⃣" becomes parseable as 25197.
+export function normalizeText(t) {
+  return String(t || '')
+    .replace(/([0-9])(?:️)?⃣/g, '$1')  // keycap digits
+    .replace(/‍/g, '');                       // ZWJ that emoji sequences use
+}
+
 // --- number parsing ---
 
 // Turn "1.2L", "12k", "1,20,000", "₹29993" into an integer rupee value.
@@ -44,6 +54,10 @@ export function parseDate(str) {
   if (mo > 12 && d <= 12) { [d, mo] = [mo, d]; }
   if (d < 1 || d > 31 || mo < 1 || mo > 12) return null;
   if (y < 100) y += 2000;
+  // Guard against typos like "3026" — beyond a reasonable window, discard so
+  // the caller falls back to today's date.
+  const nowYear = new Date().getUTCFullYear();
+  if (y > nowYear + 1 || y < nowYear - 5) return null;
   return `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
 }
 
@@ -51,8 +65,10 @@ export function parseDate(str) {
 
 // Find "label: value" where label matches any of the given keyword regexes.
 // Returns the raw value string, or null.
+// Splits on newline / semicolon only — NOT comma, since Indian numbers use
+// commas as thousand separators (46,441 must stay together).
 function findFieldValue(text, keywordRegex) {
-  for (const line of text.split(/\n|,|;/)) {
+  for (const line of text.split(/\n|;/)) {
     const m = line.match(new RegExp(`(?:${keywordRegex})\\s*[:\\-–]*\\s*(.+)`, 'i'));
     if (m) return m[1].trim();
   }
@@ -84,10 +100,14 @@ const KW_BILLS     = 'bills?|bill\\s*count|no\\.?\\s*of\\s*bills';
 const KW_WALKINS   = 'walk[-\\s]?ins?|walk[-\\s]?in\\s*count|foot\\s*fall|footfall';
 
 // Main entry — same shape as the old Claude-backed parseMessage.
+// Additional field: bigBillAmount — set when the message announces a big bill
+// alongside another intent (e.g. "Wow Big Bill Value 25197 ... Achieved Till
+// Now 46441") so caller can save BOTH a DSR row and a big_bills row.
 export function parseMessage(text) {
-  const t = String(text || '').trim();
-  if (!t) return empty('other');
+  const raw = String(text || '').trim();
+  if (!raw) return empty('other');
 
+  const t = normalizeText(raw);
   const date = parseDate(t);
   const walkins = findFieldInt(t, KW_WALKINS);
   // Bills count only if the number is small — a "bill" in a message with
@@ -98,8 +118,10 @@ export function parseMessage(text) {
   // Field-priority extraction — prefer "Achieved Till Now" over "Total" over plain "Sales".
   const achievedRaw = findFieldValue(t, KW_ACHIEVED);
   const openingRaw  = findFieldValue(t, KW_OPENING);
-  const bigBillRaw  = findFieldValue(t, KW_BIG_BILL);
   const salesRaw    = findFieldValue(t, KW_SALES);
+
+  const hasBigBill = RX_BIG_BILL.test(t);
+  const bigBillAmount = hasBigBill ? extractBigBillAmount(t) : null;
 
   let intent = 'other';
   let amount = null;
@@ -109,14 +131,15 @@ export function parseMessage(text) {
     amount = parseAmount(openingRaw ?? firstNumberInMessage(t));
   } else if (RX_GROOMING.test(t)) {
     intent = 'grooming';
-  } else if (RX_STORE_OPEN.test(t) && !achievedRaw && !salesRaw) {
+  } else if (RX_STORE_OPEN.test(t) && !achievedRaw && !salesRaw && !hasBigBill) {
     intent = 'store_open';
-  } else if (RX_BIG_BILL.test(t)) {
-    intent = 'big_bill';
-    amount = parseAmount(bigBillRaw ?? firstNumberInMessage(t));
   } else if (achievedRaw != null) {
     intent = 'dsr';                                // "Achieved Till Now" = running total
     amount = parseAmount(achievedRaw);
+    // bigBillAmount is already captured — caller inserts second row
+  } else if (hasBigBill) {
+    intent = 'big_bill';
+    amount = bigBillAmount ?? parseAmount(firstNumberInMessage(t));
   } else if (salesRaw != null) {
     // A plain "sales" report — treat as DSR if the message hints at cumulative,
     // else hourly.
@@ -149,8 +172,21 @@ export function parseMessage(text) {
     walkins,
     compliant,
     notes,
+    bigBillAmount: intent === 'big_bill' ? null : bigBillAmount,  // avoid double-count
     confidence: intent === 'other' ? 0.2 : 0.9,
   };
+}
+
+// Grab the big-bill value from strings like "Big Bill Value – 25197",
+// "🤩Wow Big Bill🤩 ... Value – 25197" or "Big bill 45000". Tries a labeled
+// Value/Amount field first, then falls back to a number near the "big bill"
+// keyword.
+function extractBigBillAmount(t) {
+  const valueRaw = findFieldValue(t, 'value|amount|amt|total\\s*value');
+  const valueAmt = valueRaw ? parseAmount(valueRaw) : null;
+  if (valueAmt != null) return valueAmt;
+  const near = t.match(/(?:big\s*bill|major\s*sale|hvb)[^0-9\n]{0,80}(\d[\d,]*(?:\.\d+)?\s*[kKlLmM]?)/i);
+  return near ? parseAmount(near[1]) : null;
 }
 
 function firstNumberInMessage(text) {
