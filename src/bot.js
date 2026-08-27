@@ -135,8 +135,18 @@ async function handleMessage(m) {
 
   const jid = m.key.remoteJid;
   const isGroup = jid?.endsWith('@g.us');
-  const sender = isGroup ? m.key.participant : jid;
-  const senderPhone = String(sender || '').split('@')[0];
+
+  // WhatsApp multi-device sometimes yields participants as `<lid>@lid` instead
+  // of `<phone>@s.whatsapp.net`. Prefer participantAlt when the primary is a
+  // linked-identifier so we get the real phone number.
+  let participant = m.key.participant;
+  if (participant?.endsWith('@lid') && m.key.participantAlt) {
+    participant = m.key.participantAlt;
+  }
+  const senderRaw = isGroup ? participant : jid;
+  // strip @host, then any `:device` suffix Baileys attaches for multi-device
+  const senderPhone = String(senderRaw || '').split('@')[0].split(':')[0];
+
   const text =
     m.message.conversation ||
     m.message.extendedTextMessage?.text ||
@@ -144,6 +154,9 @@ async function handleMessage(m) {
     '';
 
   if (!text) return;
+
+  // Debug — one line per received message so we can see what got dropped and why.
+  console.log(`[bot] msg from ${senderPhone} in ${jid?.slice(0, 25)} :: ${text.slice(0, 60).replace(/\n/g, ' ')}`);
 
   // Strict group whitelist — messages from any other group are fully ignored,
   // so the bot never sees them, never parses them, never spends tokens on them.
