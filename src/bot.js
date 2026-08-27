@@ -209,13 +209,31 @@ async function handleMessage(m) {
     return;
   }
 
-  // Store update — inside the main group, only messages from known store phones
-  // get parsed. Everyone else in the group is silently ignored (token saver).
+  // Main-group message — log EVERY one (even from senders not mapped to a
+  // store) so the dashboard's Message log shows the full stream and nothing
+  // is silently dropped. Typed rows (dsr, big_bills, etc.) only get created
+  // when the sender phone maps to a known store.
   if (isGroup && jid === MAIN_GROUP_JID) {
+    const parsed = parseMessage(text);
     const store = storeByPhone(senderPhone);
-    if (!store) return;
 
-    const result = await ingestStoreMessage({ store, jid, sender: senderPhone, text });
+    try {
+      await queries.logMessage({
+        jid,
+        sender: senderPhone || null,
+        is_group: 1,
+        text,
+        intent: store ? parsed.intent : 'unmapped_sender',
+        parsed_json: { ...parsed, store_key: store?.key ?? null, sender_matched: !!store },
+        received_at: nowIso(),
+      });
+    } catch (e) {
+      console.error('[bot] logMessage failed:', e.message);
+    }
+
+    if (!store) return;  // logged, but no typed row without a mapped store
+
+    const result = await ingestStoreMessage({ store, text, parsed });
     if (!result) return;
 
     if (result.intent !== 'other') {
