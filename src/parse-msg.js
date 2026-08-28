@@ -15,12 +15,13 @@
 
 // --- text normalisation ---
 
-// Convert keycap emoji digits (2️⃣) to plain digits, strip zero-width joiners.
-// So "Value – 2️⃣5️⃣1️⃣9️⃣7️⃣" becomes parseable as 25197.
+// Convert keycap emoji digits (2️⃣) to plain digits, strip zero-width joiners,
+// and remove WhatsApp @-mentions (long IDs) so they aren't picked up as amounts.
 export function normalizeText(t) {
   return String(t || '')
     .replace(/([0-9])(?:️)?⃣/g, '$1')  // keycap digits
-    .replace(/‍/g, '');                       // ZWJ that emoji sequences use
+    .replace(/‍/g, '')                        // ZWJ that emoji sequences use
+    .replace(/@\d{6,}/g, ' ');                       // @mentions e.g. @183065028645014
 }
 
 // --- number parsing ---

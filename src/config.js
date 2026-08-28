@@ -160,6 +160,36 @@ export const storeByKey   = (key)   => STORES.find((s) => s.key === key) || null
 export const storeByJid   = ()      => null;  // compat stub — single-group model
 export const isOwner      = (phone) => OWNERS.includes(digits(phone));
 
+// Store name → store lookup, used when the sender's phone can't identify the
+// store (WhatsApp LIDs, unmapped staff phones). Looks for all name-keywords
+// present in the message text, picks the most specific (longest-name) match.
+//
+// Examples:
+//   "ZORA MALL RAIPUR"                → ZORA MALL     (keywords: zora, mall)
+//   "Store: *VK Ambience mall*"       → AMBIENCE V.K. (keywords: ambience, vk)
+//   "Ambience GGN"                    → AMBIENCE      (keywords: ambience)
+//   "Store: *MOM PUNE*"               → Mom Pune      (keywords: mom, pune)
+export function findStoreByText(text) {
+  if (!text) return null;
+  const norm = String(text).toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ');
+  let best = null, bestScore = 0;
+  for (const store of STORES) {
+    const keywords = store.name.toLowerCase()
+      .replace(/\./g, '')          // "V.K." → "VK"
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .split(/\s+/)
+      .filter((k) => k.length >= 2);
+    if (!keywords.length) continue;
+    if (keywords.every((k) => norm.includes(k))) {
+      const score = keywords.length;
+      if (score > bestScore) { best = store; bestScore = score; }
+    }
+  }
+  return best;
+}
+
 // Group whitelist.
 export const ALLOWED_JIDS = new Set(
   [MAIN_GROUP_JID, MANAGER_GROUP_JID].filter(Boolean)
