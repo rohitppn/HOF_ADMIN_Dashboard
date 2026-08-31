@@ -1,8 +1,8 @@
 import cron from 'node-cron';
 import { sendTo } from '../bot.js';
 import { templates } from '../templates.js';
-import { MAIN_GROUP_JID, MANAGER_GROUP_JID, HOURLY_SLOTS, EOD_TIME, OPENING_DEADLINE, TIMEZONE } from '../config.js';
-import { dailyRanking, missingReports } from '../calc.js';
+import { MAIN_GROUP_JID, MANAGER_GROUP_JID, HOURLY_SLOTS, EOD_TIME, TIMEZONE } from '../config.js';
+import { dailyRanking } from '../calc.js';
 import { todayDate } from '../util.js';
 import { appendRankings } from '../sheets.js';
 
@@ -15,31 +15,22 @@ function promptGroup(text) {
   return sendTo(MAIN_GROUP_JID, text).catch((e) => console.error('[cron] send fail:', e.message));
 }
 
+// What the bot posts on its own, on a schedule:
+//   • Hourly @mention prompts at 1 / 3 / 5 / 7 / 9 PM (asked for explicitly)
+//   • End-of-day ranking to the leadership group
+//
+// Disabled by default (uncomment below if you ever want them back):
+//   • 10:00 opening-balance prompt
+//   • 10:31 late-opening nudge to leadership
+//   • 11:00 grooming compliance prompt
+//   • 22:00 DSR prompt
 export function startSchedulers() {
-  // Morning opening-balance prompt at 10:00.
-  cron.schedule('0 10 * * *', () => promptGroup(templates.promptOpeningBalance()), opts);
-
-  // Late-opening reminder one minute past the deadline.
-  cron.schedule(`${OPENING_DEADLINE.minute + 1} ${OPENING_DEADLINE.hour} * * *`, async () => {
-    const date = todayDate();
-    const missing = await missingReports(date, 'opening');
-    if (missing.length && MANAGER_GROUP_JID) {
-      await sendTo(MANAGER_GROUP_JID, templates.missingReport({ kind: 'store opening (past 10:30)', stores: missing }));
-    }
-  }, opts);
-
-  // Hourly check-ins — at each slot, @mention every store manager in the
-  // main group and ask for the previous hour's sales.
+  // Hourly check-ins — @mention every store manager, ask for the past hour's sales.
   for (const slot of HOURLY_SLOTS) {
     cron.schedule(`${slot.minute} ${slot.hour} * * *`, () => promptGroup(templates.promptHourly(slot.hour)), opts);
   }
 
-  // Grooming check-in around store opening (11:00).
-  cron.schedule('0 11 * * *', () => promptGroup(templates.promptGrooming()), opts);
-
-  // EOD: ask DSR, then an hour later post the ranking to the leadership group.
-  cron.schedule(`${EOD_TIME.minute} ${EOD_TIME.hour} * * *`, () => promptGroup(templates.promptDsr()), opts);
-
+  // Daily ranking post-EOD to the leadership group (23:00 by default).
   cron.schedule(`${EOD_TIME.minute} ${(EOD_TIME.hour + 1) % 24} * * *`, async () => {
     if (!MANAGER_GROUP_JID) return;
     const date = todayDate();
@@ -50,5 +41,5 @@ export function startSchedulers() {
     }))).catch((e) => console.error('[cron] sheet rankings:', e.message));
   }, opts);
 
-  console.log('[cron] schedulers started');
+  console.log('[cron] schedulers started — hourly prompts + daily ranking only');
 }
