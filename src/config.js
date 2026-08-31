@@ -161,14 +161,18 @@ export const storeByJid   = ()      => null;  // compat stub — single-group mo
 export const isOwner      = (phone) => OWNERS.includes(digits(phone));
 
 // Store name → store lookup, used when the sender's phone can't identify the
-// store (WhatsApp LIDs, unmapped staff phones). Looks for all name-keywords
-// present in the message text, picks the most specific (longest-name) match.
+// store (WhatsApp LIDs, unmapped staff phones). Scores each store on how many
+// of its name-keywords appear in the message; full matches get a big bonus
+// so they beat partials, but partials still win over no-matches.
 //
 // Examples:
-//   "ZORA MALL RAIPUR"                → ZORA MALL     (keywords: zora, mall)
-//   "Store: *VK Ambience mall*"       → AMBIENCE V.K. (keywords: ambience, vk)
-//   "Ambience GGN"                    → AMBIENCE      (keywords: ambience)
-//   "Store: *MOM PUNE*"               → Mom Pune      (keywords: mom, pune)
+//   "ZORA MALL RAIPUR"                → ZORA MALL      (full match: zora + mall)
+//   "WOW BILL DONE BY ZORA STORE"     → ZORA MALL      (partial: zora only)
+//   "Oberoi store Menka ASM"          → OBEROI         (full: oberoi)
+//   "Store: *VK Ambience mall*"       → AMBIENCE V.K.  (full: ambience + vk)
+//   "Ambience GGN"                    → AMBIENCE       (full: ambience — VK partial loses)
+//   "*MOM PUNE*"                      → Mom Pune       (full: mom + pune — Phoenix partial loses)
+//   "PMC Bangalore"                   → null           (no store keyword matches)
 export function findStoreByText(text) {
   if (!text) return null;
   const norm = String(text).toLowerCase()
@@ -182,10 +186,12 @@ export function findStoreByText(text) {
       .split(/\s+/)
       .filter((k) => k.length >= 2);
     if (!keywords.length) continue;
-    if (keywords.every((k) => norm.includes(k))) {
-      const score = keywords.length;
-      if (score > bestScore) { best = store; bestScore = score; }
-    }
+    const matched = keywords.filter((k) => norm.includes(k)).length;
+    if (matched === 0) continue;
+    // Full-match wins big; partial matches still count so single-name mentions
+    // (like "Oberoi" or "Zora") route correctly when no fuller match exists.
+    const score = matched + (matched === keywords.length ? 100 : 0);
+    if (score > bestScore) { best = store; bestScore = score; }
   }
   return best;
 }
