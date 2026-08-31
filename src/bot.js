@@ -14,7 +14,7 @@ import { handleOwnerCommand } from './commands.js';
 import { answerQuestion } from './qa.js';
 import { templates } from './templates.js';
 import { MAIN_GROUP_JID, MANAGER_GROUP_JID, storeByPhone, findStoreByText, isOwner, isAllowedGroup } from './config.js';
-import { parseMessage } from './parse-msg.js';
+import { parseMessage } from './claude.js';
 import { queries } from './supabase.js';
 import { nowIso } from './util.js';
 
@@ -214,7 +214,7 @@ async function handleMessage(m) {
   // is silently dropped. Typed rows (dsr, big_bills, etc.) only get created
   // when the sender phone maps to a known store.
   if (isGroup && jid === MAIN_GROUP_JID) {
-    const parsed = parseMessage(text);
+    const parsed = await parseMessage(text);
     // Try sender phone first; fall back to store-name in the message body
     // (WhatsApp now sends LIDs instead of phone numbers for many accounts).
     const store = storeByPhone(senderPhone) || findStoreByText(text);
