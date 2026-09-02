@@ -88,6 +88,7 @@ export const api = {
   messages:    (p)      => req('/dashboard-api/messages', p),
   analytics:   (p)      => req('/dashboard-api/analytics', p),
   whatsapp:    ()       => req('/dashboard-api/whatsapp'),
+  unlinkWhatsapp: ()    => post('/dashboard-api/whatsapp/unlink'),
   storesAll:   ()       => req('/dashboard-api/stores/all'),
   addStore:    (row)    => post('/dashboard-api/stores', row),
   deleteStore: (key)    => del(`/dashboard-api/stores/${encodeURIComponent(key)}`),

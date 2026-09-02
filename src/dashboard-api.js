@@ -3,6 +3,8 @@
 // All reads go through supabase.js — dashboard never talks to Supabase directly.
 
 import express from 'express';
+import fs from 'node:fs';
+import path from 'node:path';
 import QRCode from 'qrcode';
 import { queries } from './supabase.js';
 import {
@@ -390,6 +392,28 @@ dashboardApi.get('/whatsapp', wrap(async () => {
     } catch (e) { groups = [{ error: e.message }]; }
   }
   return { status, qr: qrDataUrl, groups, managerJid: MANAGER_GROUP_JID || null };
+}));
+
+// Unlink the WhatsApp session cleanly. Calls sock.logout() so WhatsApp
+// removes the device on the user's phone, wipes local auth, then exits so
+// Railway restarts fresh. Next boot shows a QR ready for a new scan.
+dashboardApi.post('/whatsapp/unlink', wrap(async () => {
+  const sock = getSock();
+  if (sock) {
+    try { await sock.logout(); }
+    catch (e) { console.warn('[unlink] sock.logout failed (continuing to wipe):', e.message); }
+  }
+  const authDir = path.resolve('auth');
+  try {
+    if (fs.existsSync(authDir)) {
+      for (const f of fs.readdirSync(authDir)) {
+        fs.rmSync(path.join(authDir, f), { recursive: true, force: true });
+      }
+    }
+  } catch (e) { console.error('[unlink] wipe failed:', e.message); }
+  // Give the response time to reach the browser before we kill the process.
+  setTimeout(() => process.exit(0), 300);
+  return { ok: true, message: 'unlinked — bot restarting, fresh QR in ~10s' };
 }));
 
 // --- Broadcast (manual message to a WhatsApp group) ---

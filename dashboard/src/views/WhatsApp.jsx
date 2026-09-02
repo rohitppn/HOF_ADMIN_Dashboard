@@ -27,19 +27,15 @@ export default function WhatsAppView() {
     try { await navigator.clipboard.writeText(jid); setCopied(jid); setTimeout(() => setCopied(null), 1200); } catch {}
   }
 
-  async function resetSession() {
-    if (!confirm('Wipe WhatsApp session and force a new QR? The bot will restart.')) return;
+  async function unlinkWhatsapp() {
+    if (!confirm('Unlink WhatsApp?\n\nThis will:\n  • Log out from WhatsApp (device disappears from Linked Devices on your phone)\n  • Wipe the saved session\n  • Restart the bot — a fresh QR appears in ~10 seconds\n\nContinue?')) return;
     setResetting(true);
     try {
-      // /admin/relogin still uses the ADMIN_SECRET query param (backend has
-      // no bearer-token acceptance on the /admin/* routes). This works as long
-      // as ADMIN_SECRET matches on client and server.
-      const secret = prompt('Enter ADMIN_SECRET to confirm session reset (matches Railway env var):');
-      if (!secret) return;
-      await fetch(`${API_BASE}/admin/relogin?secret=${encodeURIComponent(secret)}`);
-      // The server exits and restarts — poll will resume once it's up.
-    } catch (e) { alert('Reset failed: ' + e.message); }
-    finally { setResetting(false); }
+      await api.unlinkWhatsapp();
+      alert('Unlinked. The bot is restarting — the new QR will appear here in a few seconds.');
+    } catch (e) {
+      alert('Unlink failed: ' + e.message);
+    } finally { setResetting(false); }
   }
 
   if (err) return <div className="empty" style={{ color: 'var(--red)' }}>Error: {err}</div>;
@@ -77,13 +73,15 @@ export default function WhatsAppView() {
           </div>
         )}
 
-        <div style={{ marginTop: 16, display: 'flex', gap: 8, alignItems: 'center' }}>
+        <div style={{ marginTop: 16, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
           <button
-            onClick={resetSession}
+            onClick={unlinkWhatsapp}
             disabled={resetting}
-            style={{ padding: '8px 14px', borderRadius: 6, background: 'transparent', border: '1px solid var(--border-2)', color: 'var(--red)' }}
-          >{resetting ? 'Resetting…' : 'Reset session (wipe auth, new QR)'}</button>
-          <span style={{ color: 'var(--text-3)', fontSize: 12 }}>Use this if the bot is stuck disconnected or you want to move it to a different phone.</span>
+            style={{ padding: '8px 14px', borderRadius: 6, background: 'transparent', border: '1px solid var(--red)', color: 'var(--red)', fontWeight: 500 }}
+          >{resetting ? 'Unlinking…' : 'Unlink WhatsApp'}</button>
+          <span style={{ color: 'var(--text-3)', fontSize: 12 }}>
+            Logs out from WhatsApp, wipes the saved session, restarts the bot with a fresh QR. Use to move the bot to a different phone or to hard-reset a stuck session.
+          </span>
         </div>
       </div>
 
